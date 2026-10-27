@@ -1,5 +1,6 @@
 import com.sun.net.httpserver.HttpServer; // Java標準の簡易Webサーバーを使います
 import java.net.InetSocketAddress; // サーバーの待ち受け先を指定するために使います
+import java.net.URLDecoder; // URLエンコードされた文字を元に戻します
 
 public class App { // Appという名前のクラスです
     public static void main(String[] args) throws Exception { // プログラムの実行開始点です
@@ -8,7 +9,10 @@ public class App { // Appという名前のクラスです
             String path = exchange.getRequestURI().getPath(); // アクセスされたパスを取り出します
             String message;
             if (path.equals("/hello")) { // パスが /hello か比べます
-                message = "こんにちは！";
+                String query = exchange.getRequestURI().getRawQuery(); // URLのクエリを取り出します
+                String name = query == null ? "ゲスト" : query.substring(5); // クエリがないときはゲスト、それ以外は name= の後ろを切り出します
+                name = URLDecoder.decode(name, "UTF-8"); // URLエンコードされた名前をUTF-8で元に戻します
+                message = "こんにちは、" + name + "さん！"; // 名前を応答に加えます
             } else if (path.equals("/bye")) { // パスが /bye か比べます
                 message = "さようなら！";
             } else if (path.equals("/menu")) {
