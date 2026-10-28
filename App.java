@@ -55,17 +55,21 @@ public class App {
                 return;
             } else if (path.equals("/update") && method.equals("POST")) {
                 Map<String, String> form = parseForm(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+                String title = form.getOrDefault("todo", "").trim();
+                String details = emptyToNull(form.get("details"));
                 Integer progress = parseProgress(form.get("progress"));
                 String nextAt = emptyToNull(form.get("nextAt"));
                 try {
                     int id = Integer.parseInt(form.getOrDefault("id", ""));
-                    if (id > 0 && (form.get("progress") == null || form.get("progress").isBlank()
+                    if (id > 0 && !title.isEmpty() && (form.get("progress") == null || form.get("progress").isBlank()
                             || progress != null)) {
                         try (PreparedStatement statement = connection.prepareStatement(
-                                "UPDATE todos SET progress = ?, next_at = ? WHERE id = ?")) {
-                            setNullableInt(statement, 1, progress);
-                            statement.setString(2, nextAt);
-                            statement.setInt(3, id);
+                                "UPDATE todos SET title = ?, details = ?, progress = ?, next_at = ? WHERE id = ?")) {
+                            statement.setString(1, title);
+                            statement.setString(2, details);
+                            setNullableInt(statement, 3, progress);
+                            statement.setString(4, nextAt);
+                            statement.setInt(5, id);
                             statement.executeUpdate();
                         }
                     }
@@ -144,11 +148,16 @@ public class App {
                                     .append("</div>")
                                     .append("<form method='post' action='/update'>")
                                     .append("<input type='hidden' name='id' value='").append(todo.getId()).append("'>")
+                                    .append("<label>Todo <input name='todo' required value='")
+                                    .append(escapeHtml(todo.getTitle())).append("'></label> ")
+                                    .append("<label>詳細 <textarea name='details' rows='3'>")
+                                    .append(todo.getDetails() == null ? "" : escapeHtml(todo.getDetails()))
+                                    .append("</textarea></label> ")
                                     .append("<label>進捗（%） <input name='progress' type='number' min='0' max='100' placeholder='未設定' value='")
                                     .append(todo.getProgress() == null ? "" : todo.getProgress()).append("'></label> ")
                                     .append("<label>次に行う日時 <input name='nextAt' type='datetime-local' value='")
                                     .append(todo.getNextAt() == null ? "" : escapeHtml(todo.getNextAt())).append("'></label> ")
-                                    .append("<button>進捗・日時を保存</button></form>")
+                                    .append("<button>変更を保存</button></form>")
                                     .append("<a href='/done?id=").append(todo.getId()).append("'>完了</a> ")
                                     .append("<a href='/delete?id=").append(todo.getId()).append("'>削除</a></li>");
                         }
