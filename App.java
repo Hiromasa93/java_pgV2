@@ -290,7 +290,8 @@ public class App {
     static List<Todo> selectTodos() throws SQLException {
         List<Todo> todos = new ArrayList<>();
         try (PreparedStatement statement = connection.prepareStatement(
-                "SELECT id, title, done, progress, next_at FROM todos ORDER BY id");
+                "SELECT id, title, done, progress, next_at FROM todos "
+                        + "ORDER BY done ASC, CASE WHEN next_at IS NULL OR next_at = '' THEN 1 ELSE 0 END ASC, next_at ASC, id ASC");
              ResultSet result = statement.executeQuery()) {
             while (result.next()) {
                 Todo todo = new Todo(result.getInt("id"), result.getString("title"));
