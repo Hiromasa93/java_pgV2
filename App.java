@@ -11,7 +11,10 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.time.Duration;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.YearMonth;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -30,6 +33,13 @@ public class App {
         addColumnIfMissing("next_at", "TEXT");
         addColumnIfMissing("details", "TEXT");
         addColumnIfMissing("category", "TEXT");
+        addColumnIfMissing("repeat_type", "TEXT");
+        addColumnIfMissing("repeat_day", "INTEGER");
+        addColumnIfMissing("repeat_days", "TEXT");
+        addColumnIfMissing("repeat_time", "TEXT");
+        addColumnIfMissing("monthly_day", "INTEGER");
+        addColumnIfMissing("monthly_time", "TEXT");
+        migrateRepeatSettings();
 
         HttpServer server = HttpServer.create(new InetSocketAddress(8080), 0);
         server.createContext("/", exchange -> {
@@ -45,14 +55,24 @@ public class App {
                 String category = emptyToNull(form.get("category"));
                 Integer progress = parseProgress(form.get("progress"));
                 String nextAt = emptyToNull(form.get("nextAt"));
+                String repeatType = parseRepeatType(form.get("repeatType"));
+                String repeatDays = parseRepeatDays(form.get("repeatDays"), repeatType);
+                String repeatTime = parseRepeatTime(form.get("repeatTime"));
+                Integer monthlyDay = parseMonthlyDay(form.get("monthlyDay"), nextAt);
+                String monthlyTime = parseRepeatTime(form.get("monthlyTime"));
                 if (!title.isEmpty()) {
                     try (PreparedStatement statement = connection.prepareStatement(
-                            "INSERT INTO todos (title, done, progress, next_at, details, category) VALUES (?, 0, ?, ?, ?, ?)")) {
+                            "INSERT INTO todos (title, done, progress, next_at, details, category, repeat_type, repeat_days, repeat_time, monthly_day, monthly_time) VALUES (?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)")) {
                         statement.setString(1, title);
                         setNullableInt(statement, 2, progress);
                         statement.setString(3, nextAt);
                         statement.setString(4, details);
                         statement.setString(5, category);
+                        statement.setString(6, repeatType);
+                        statement.setString(7, repeatType == null ? null : repeatDays);
+                        statement.setString(8, "daily".equals(repeatType) ? repeatTime : null);
+                        setNullableInt(statement, 9, "monthly".equals(repeatType) ? monthlyDay : null);
+                        statement.setString(10, "monthly".equals(repeatType) ? monthlyTime : null);
                         statement.executeUpdate();
                     } catch (SQLException e) {
                         throw new IOException(e);
@@ -67,18 +87,28 @@ public class App {
                 String category = emptyToNull(form.get("category"));
                 Integer progress = parseProgress(form.get("progress"));
                 String nextAt = emptyToNull(form.get("nextAt"));
+                String repeatType = parseRepeatType(form.get("repeatType"));
+                String repeatDays = parseRepeatDays(form.get("repeatDays"), repeatType);
+                String repeatTime = parseRepeatTime(form.get("repeatTime"));
+                Integer monthlyDay = parseMonthlyDay(form.get("monthlyDay"), nextAt);
+                String monthlyTime = parseRepeatTime(form.get("monthlyTime"));
                 try {
                     int id = Integer.parseInt(form.getOrDefault("id", ""));
                     if (id > 0 && !title.isEmpty() && (form.get("progress") == null || form.get("progress").isBlank()
                             || progress != null)) {
                         try (PreparedStatement statement = connection.prepareStatement(
-                                "UPDATE todos SET title = ?, details = ?, progress = ?, next_at = ?, category = ? WHERE id = ?")) {
+                                "UPDATE todos SET title = ?, details = ?, progress = ?, next_at = ?, category = ?, repeat_type = ?, repeat_days = ?, repeat_time = ?, monthly_day = ?, monthly_time = ? WHERE id = ?")) {
                             statement.setString(1, title);
                             statement.setString(2, details);
                             setNullableInt(statement, 3, progress);
                             statement.setString(4, nextAt);
                             statement.setString(5, category);
-                            statement.setInt(6, id);
+                            statement.setString(6, repeatType);
+                            statement.setString(7, repeatType == null ? null : repeatDays);
+                            statement.setString(8, "daily".equals(repeatType) ? repeatTime : null);
+                            setNullableInt(statement, 9, "monthly".equals(repeatType) ? monthlyDay : null);
+                            statement.setString(10, "monthly".equals(repeatType) ? monthlyTime : null);
+                            statement.setInt(11, id);
                             statement.executeUpdate();
                         }
                     }
@@ -94,12 +124,25 @@ public class App {
                 if (query != null && query.startsWith("id=") && query.length() > 3) {
                     try {
                         int id = Integer.parseInt(query.substring(3));
-                        try (PreparedStatement statement = connection.prepareStatement("UPDATE todos SET done = 1 WHERE id = ?")) {
+                        completeTodo(id);
+                    } catch (NumberFormatException e) {
+                        // 数字でないidは無視します。
+                    } catch (SQLException e) {
+                        throw new IOException(e);
+                    }
+                }
+                redirectHome(exchange);
+                return;
+            } else if (path.equals("/undo") && method.equals("GET")) {
+                String query = exchange.getRequestURI().getQuery();
+                if (query != null && query.startsWith("id=") && query.length() > 3) {
+                    try {
+                        int id = Integer.parseInt(query.substring(3));
+                        try (PreparedStatement statement = connection.prepareStatement("UPDATE todos SET done = 0 WHERE id = ?")) {
                             statement.setInt(1, id);
                             statement.executeUpdate();
                         }
-                    } catch (NumberFormatException e) {
-                        // 数字でないidは無視します。
+                    } catch (NumberFormatException ignored) {
                     } catch (SQLException e) {
                         throw new IOException(e);
                     }
@@ -127,15 +170,16 @@ public class App {
                 String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
                 List<Integer> ids = parseIds(body);
                 if (!ids.isEmpty()) {
-                    String placeholders = String.join(",", java.util.Collections.nCopies(ids.size(), "?"));
-                    String sql = path.equals("/bulk-done")
-                            ? "UPDATE todos SET done = 1 WHERE id IN (" + placeholders + ")"
-                            : "DELETE FROM todos WHERE id IN (" + placeholders + ")";
-                    try (PreparedStatement statement = connection.prepareStatement(sql)) {
-                        for (int i = 0; i < ids.size(); i++) {
-                            statement.setInt(i + 1, ids.get(i));
+                    try {
+                        if (path.equals("/bulk-done")) {
+                            for (int id : ids) completeTodo(id);
+                        } else {
+                            String placeholders = String.join(",", java.util.Collections.nCopies(ids.size(), "?"));
+                            try (PreparedStatement statement = connection.prepareStatement("DELETE FROM todos WHERE id IN (" + placeholders + ")")) {
+                                for (int i = 0; i < ids.size(); i++) statement.setInt(i + 1, ids.get(i));
+                                statement.executeUpdate();
+                            }
                         }
-                        statement.executeUpdate();
                     } catch (SQLException e) {
                         throw new IOException(e);
                     }
@@ -191,6 +235,7 @@ public class App {
                         + "<label>カテゴリ <input name='category' placeholder='例: 買い物'></label> "
                         + "<label>進捗（%） <input name='progress' type='number' min='0' max='100' placeholder='未設定'></label> "
                         + "<label>次に行う日時 <input name='nextAt' type='datetime-local'></label> "
+                        + repeatControls(null, null, "09:00", null, "09:00")
                         + "<button>追加</button></form>");
                 html.append("<div class='search-tools'><form class='search-form' method='get' action='/search'>")
                         .append("<label>キーワード検索 <input name='q' value='")
@@ -256,6 +301,7 @@ public class App {
                                 }
                             }
                             html.append("</div><details class='todo-section'><summary>詳細/進捗</summary>");
+                            html.append("<div class='todo-meta'>\u7E70\u308A\u8FD4\u3057: ").append(repeatLabel(todo)).append("</div>");
                             html.append("<div class='todo-meta'>カテゴリ: ")
                                     .append(todo.getCategory() == null ? "未設定" : escapeHtml(todo.getCategory()))
                                     .append("</div>");
@@ -282,14 +328,16 @@ public class App {
                                     .append(todo.getProgress() == null ? "" : todo.getProgress()).append("'></label> ")
                                     .append("<label>次に行う日時 <input name='nextAt' type='datetime-local' value='")
                                     .append(todo.getNextAt() == null ? "" : escapeHtml(todo.getNextAt())).append("'></label> ")
+                                    .append(repeatControls(todo.getRepeatType(), todo.getRepeatDays(), todo.getRepeatTime(), todo.getMonthlyDay(), todo.getMonthlyTime()))
                                     .append("<button>変更を保存</button></form></details>")
-                                    .append("<a href='/done?id=").append(todo.getId()).append("'>完了</a> ")
-                                    .append("<a href='/delete?id=").append(todo.getId()).append("'>削除</a></li>");
+                                    .append(todoActions(todo));
                         }
                         html.append("</ul>");
                     }
                 }
                 html.append("<script>(function(){const form=document.getElementById('bulk-form');const toggle=document.getElementById('select-mode');const boxes=Array.from(document.querySelectorAll('.select-task'));const actions=Array.from(document.querySelectorAll('.bulk-tools button[type=submit]'));const count=document.getElementById('selection-count');const dialog=document.getElementById('bulk-confirm');let pendingButton=null;let confirmed=false;function refresh(){const selected=boxes.filter(box=>box.checked);const active=document.body.classList.contains('selecting');selected.forEach(box=>box.closest('.todo-card').classList.add('selected'));boxes.filter(box=>!box.checked).forEach(box=>box.closest('.todo-card').classList.remove('selected'));actions.forEach(button=>{button.disabled=selected.length===0;button.hidden=!active;});count.textContent=selected.length?' '+selected.length+'件選択中':'';}toggle.addEventListener('click',function(){const active=document.body.classList.toggle('selecting');toggle.setAttribute('aria-pressed',String(active));toggle.textContent=active?'選択を解除':'複数選択';if(!active){boxes.forEach(box=>box.checked=false);}refresh();});boxes.forEach(box=>box.addEventListener('change',refresh));form.addEventListener('submit',function(event){if(confirmed){confirmed=false;return;}event.preventDefault();pendingButton=event.submitter;if(pendingButton){document.getElementById('bulk-confirm-message').textContent=pendingButton.dataset.confirm;dialog.showModal();}});document.getElementById('bulk-confirm-yes').addEventListener('click',function(){if(pendingButton){const button=pendingButton;pendingButton=null;confirmed=true;dialog.close();form.requestSubmit(button);}});document.getElementById('bulk-confirm-no').addEventListener('click',function(){pendingButton=null;dialog.close();});refresh();})();</script></body></html>");
+                html.append("<script>document.querySelectorAll('.repeat-type').forEach(function(select){const form=select.closest('form');function updateRepeatFields(){form.querySelectorAll('.repeat-fields').forEach(function(field){field.hidden=!field.classList.contains(select.value+'-fields');});}select.addEventListener('change',updateRepeatFields);updateRepeatFields();});</script>");
+                html.append("<script>let pendingLink=null;document.querySelectorAll(\"a[data-confirm]\").forEach(function(link){link.addEventListener(\"click\",function(event){event.preventDefault();pendingLink=link;document.getElementById(\"bulk-confirm-message\").textContent=link.dataset.confirm;document.getElementById(\"bulk-confirm\").showModal();});});document.getElementById(\"bulk-confirm-yes\").addEventListener(\"click\",function(){if(pendingLink){const link=pendingLink;pendingLink=null;location.href=link.href;}});document.getElementById(\"bulk-confirm-no\").addEventListener(\"click\",function(){pendingLink=null;});</script>");
                 message = html.toString();
                 exchange.getResponseHeaders().set("Content-Type", "text/html; charset=UTF-8");
             } else {
@@ -338,13 +386,26 @@ public class App {
         }
     }
 
+    static void migrateRepeatSettings() throws SQLException {
+        try (Statement statement = connection.createStatement()) {
+            statement.executeUpdate("UPDATE todos SET repeat_days = CAST(repeat_day AS TEXT) WHERE repeat_type = 'weekly' AND repeat_days IS NULL AND repeat_day IS NOT NULL");
+            statement.executeUpdate("UPDATE todos SET repeat_time = substr(next_at, 12, 5) WHERE repeat_type = 'daily' AND repeat_time IS NULL AND length(next_at) >= 16");
+            statement.executeUpdate("UPDATE todos SET monthly_day = CAST(substr(next_at, 9, 2) AS INTEGER) WHERE repeat_type = 'monthly' AND monthly_day IS NULL AND length(next_at) >= 10");
+            statement.executeUpdate("UPDATE todos SET monthly_time = substr(next_at, 12, 5) WHERE repeat_type = 'monthly' AND monthly_time IS NULL AND length(next_at) >= 16");
+        }
+    }
+
     static Map<String, String> parseForm(String body) {
         Map<String, String> values = new HashMap<>();
         for (String pair : body.split("&")) {
             String[] parts = pair.split("=", 2);
             String key = URLDecoder.decode(parts[0], StandardCharsets.UTF_8);
             String value = parts.length > 1 ? URLDecoder.decode(parts[1], StandardCharsets.UTF_8) : "";
-            values.put(key, value);
+            if (key.equals("repeatDays") && values.containsKey(key)) {
+                values.put(key, values.get(key) + "," + value);
+            } else {
+                values.put(key, value);
+            }
         }
         return values;
     }
@@ -378,6 +439,171 @@ public class App {
         } catch (NumberFormatException e) {
             return null;
         }
+    }
+
+    static String parseRepeatType(String value) {
+        return "daily".equals(value) || "weekly".equals(value) || "monthly".equals(value) ? value : null;
+    }
+
+    static String parseRepeatDays(String value, String repeatType) {
+        if (!"weekly".equals(repeatType)) return null;
+        boolean[] selected = new boolean[8];
+        if (value != null) {
+            for (String part : value.split(",")) {
+                try {
+                    int day = Integer.parseInt(part);
+                    if (day >= 1 && day <= 7) selected[day] = true;
+                } catch (NumberFormatException ignored) {
+                }
+            }
+        }
+        StringBuilder result = new StringBuilder();
+        for (int day = 1; day <= 7; day++) {
+            if (selected[day]) {
+                if (result.length() > 0) result.append(',');
+                result.append(day);
+            }
+        }
+        return result.length() == 0 ? "1" : result.toString();
+    }
+
+    static String parseRepeatTime(String value) {
+        return value != null && value.matches("(?:[01]\\d|2[0-3]):[0-5]\\d") ? value : "09:00";
+    }
+
+    static Integer parseMonthlyDay(String value, String nextAt) {
+        try {
+            int day = Integer.parseInt(value == null ? "" : value);
+            if (day >= 1 && day <= 31) return day;
+        } catch (NumberFormatException ignored) {
+        }
+        if (nextAt != null && nextAt.length() >= 10) {
+            try {
+                return LocalDate.parse(nextAt.substring(0, 10)).getDayOfMonth();
+            } catch (DateTimeParseException ignored) {
+            }
+        }
+        return 1;
+    }
+
+    static String repeatControls(String repeatType, String repeatDays, String repeatTime, Integer monthlyDay, String monthlyTime) {
+        StringBuilder html = new StringBuilder("<label>\u7E70\u308A\u8FD4\u3057 <select class='repeat-type' name='repeatType'>");
+        html.append("<option value='' ").append(repeatType == null ? "selected" : "").append(">\u306A\u3057</option>")
+                .append("<option value='daily' ").append("daily".equals(repeatType) ? "selected" : "").append(">\u6BCE\u65E5</option>")
+                .append("<option value='weekly' ").append("weekly".equals(repeatType) ? "selected" : "").append(">\u6BCE\u9031</option>")
+                .append("<option value='monthly' ").append("monthly".equals(repeatType) ? "selected" : "").append(">\u6BCE\u6708</option>")
+                .append("</select></label>")
+                .append("<div class='repeat-fields daily-fields' hidden><label>\u6BCE\u65E5\u884C\u3046\u6642\u523B <input type='time' name='repeatTime' value='")
+                .append(escapeHtml(parseRepeatTime(repeatTime))).append("'></label></div>")
+                .append("<fieldset class='repeat-fields weekly-fields' hidden><legend>\u6BCE\u9031\u884C\u3046\u66DC\u65E5\uFF08\u8907\u6570\u9078\u629E\u53EF\uFF09</legend>");
+        String[] weekdays = {"\u6708", "\u706B", "\u6C34", "\u6728", "\u91D1", "\u571F", "\u65E5"};
+        String days = repeatDays == null ? "" : repeatDays;
+        for (int day = 1; day <= 7; day++) {
+            boolean checked = false;
+            for (String selected : days.split(",")) if (Integer.toString(day).equals(selected)) checked = true;
+            html.append("<label><input type='checkbox' name='repeatDays' value='").append(day).append("' ")
+                    .append(checked ? "checked" : "").append(">").append(weekdays[day - 1]).append("\u66DC\u65E5</label>");
+        }
+        html.append("</fieldset><div class='repeat-fields monthly-fields' hidden><label>\u6BCE\u6708\u306E\u65E5\u4ED8 <select name='monthlyDay'>");
+        int selectedMonthDay = monthlyDay == null || monthlyDay < 1 || monthlyDay > 31 ? 1 : monthlyDay;
+        for (int day = 1; day <= 31; day++) {
+            html.append("<option value='").append(day).append("' ").append(day == selectedMonthDay ? "selected" : "")
+                    .append(">").append(day).append("\u65E5</option>");
+        }
+        return html.append("</select></label><label>\u6BCE\u6708\u884C\u3046\u6642\u523B <input type='time' name='monthlyTime' value='")
+                .append(escapeHtml(parseRepeatTime(monthlyTime))).append("'></label></div>").toString();
+    }
+
+    static String repeatLabel(Todo todo) {
+        if ("daily".equals(todo.getRepeatType())) return "\u6BCE\u65E5 " + parseRepeatTime(todo.getRepeatTime());
+        if ("monthly".equals(todo.getRepeatType())) return "\u6BCE\u6708 " + todo.getMonthlyDay() + "\u65E5 " + parseRepeatTime(todo.getMonthlyTime());
+        if ("weekly".equals(todo.getRepeatType())) {
+            String[] weekdays = {"\u6708", "\u706B", "\u6C34", "\u6728", "\u91D1", "\u571F", "\u65E5"};
+            StringBuilder label = new StringBuilder("\u6BCE\u9031");
+            String days = todo.getRepeatDays() == null ? "1" : todo.getRepeatDays();
+            for (String value : days.split(",")) {
+                try {
+                    int day = Integer.parseInt(value);
+                    if (day >= 1 && day <= 7) label.append(" ").append(weekdays[day - 1]);
+                } catch (NumberFormatException ignored) {
+                }
+            }
+            return label.toString();
+        }
+        return "\u306A\u3057";
+    }
+
+    static String todoActions(Todo todo) {
+        String id = Integer.toString(todo.getId());
+        String action = todo.isDone()
+                ? "<a href='/undo?id=" + id + "' data-confirm='\u672A\u5B8C\u4E86\u306B\u623B\u3057\u307E\u3059\u304B'>\u672A\u5B8C\u4E86\u306B\u623B\u3059</a> "
+                : "<a href='/done?id=" + id + "' data-confirm='\u3053\u306E\u30BF\u30B9\u30AF\u3092\u5B8C\u4E86\u3057\u307E\u3059\u304B'>\u5B8C\u4E86</a> ";
+        return action + "<a href='/delete?id=" + id + "' data-confirm='\u3053\u306E\u30BF\u30B9\u30AF\u3092\u524A\u9664\u3057\u307E\u3059\u304B'>\u524A\u9664</a></li>";
+    }
+
+    static void completeTodo(int id) throws SQLException {
+        String type;
+        String days;
+        String dailyTime;
+        Integer monthDay;
+        String monthTime;
+        String nextAt;
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT repeat_type, repeat_days, repeat_day, repeat_time, monthly_day, monthly_time, next_at FROM todos WHERE id = ?")) {
+            statement.setInt(1, id);
+            try (ResultSet result = statement.executeQuery()) {
+                if (!result.next()) return;
+                type = result.getString("repeat_type");
+                days = result.getString("repeat_days");
+                if (days == null && result.getObject("repeat_day") != null) days = result.getString("repeat_day");
+                dailyTime = result.getString("repeat_time");
+                int value = result.getInt("monthly_day");
+                monthDay = result.wasNull() ? null : value;
+                monthTime = result.getString("monthly_time");
+                nextAt = result.getString("next_at");
+            }
+        }
+        String next = nextRepeatDate(type, days, dailyTime, monthDay, monthTime, nextAt);
+        try (PreparedStatement statement = connection.prepareStatement(next == null
+                ? "UPDATE todos SET done = 1 WHERE id = ?"
+                : "UPDATE todos SET done = 0, next_at = ? WHERE id = ?")) {
+            if (next == null) statement.setInt(1, id);
+            else { statement.setString(1, next); statement.setInt(2, id); }
+            statement.executeUpdate();
+        }
+    }
+
+    static String nextRepeatDate(String type, String days, String dailyTime, Integer monthDay, String monthTime, String nextAt) {
+        if (type == null) return null;
+        try {
+            LocalDateTime current = nextAt == null || nextAt.isBlank()
+                    ? LocalDateTime.now().withSecond(0).withNano(0) : LocalDateTime.parse(nextAt);
+            if ("daily".equals(type)) return current.toLocalDate().plusDays(1).atTime(LocalTime.parse(parseRepeatTime(dailyTime))).toString();
+            if ("weekly".equals(type)) {
+                boolean[] selected = new boolean[8];
+                if (days != null) for (String value : days.split(",")) {
+                    try { int day = Integer.parseInt(value); if (day >= 1 && day <= 7) selected[day] = true; }
+                    catch (NumberFormatException ignored) { }
+                }
+                boolean any = false;
+                for (int day = 1; day <= 7; day++) any |= selected[day];
+                if (!any) selected[1] = true;
+                for (int offset = 1; offset <= 7; offset++) {
+                    LocalDate date = current.toLocalDate().plusDays(offset);
+                    if (selected[date.getDayOfWeek().getValue()]) return date.atTime(current.toLocalTime()).toString();
+                }
+            }
+            if ("monthly".equals(type)) {
+                int day = monthDay == null || monthDay < 1 || monthDay > 31 ? 1 : monthDay;
+                YearMonth month = YearMonth.from(current);
+                LocalDate date = month.atDay(Math.min(day, month.lengthOfMonth()));
+                if (!date.isAfter(current.toLocalDate())) { month = month.plusMonths(1); date = month.atDay(Math.min(day, month.lengthOfMonth())); }
+                return date.atTime(LocalTime.parse(parseRepeatTime(monthTime))).toString();
+            }
+        } catch (DateTimeParseException e) {
+            return null;
+        }
+        return null;
     }
 
     static String getDeadlineWarning(String nextAt) {
@@ -525,7 +751,7 @@ public class App {
     static List<Todo> selectTodos() throws SQLException {
         List<Todo> todos = new ArrayList<>();
         try (PreparedStatement statement = connection.prepareStatement(
-                "SELECT id, title, done, progress, next_at, details, category FROM todos "
+                "SELECT id, title, done, progress, next_at, details, category, repeat_type, repeat_day, repeat_days, repeat_time, monthly_day, monthly_time FROM todos "
                         + "ORDER BY done ASC, CASE WHEN next_at IS NULL OR next_at = '' THEN 1 ELSE 0 END ASC, next_at ASC, id ASC");
              ResultSet result = statement.executeQuery()) {
             while (result.next()) {
@@ -536,6 +762,13 @@ public class App {
                 todo.setNextAt(result.getString("next_at"));
                 todo.setDetails(result.getString("details"));
                 todo.setCategory(result.getString("category"));
+                todo.setRepeatType(result.getString("repeat_type"));
+                todo.setRepeatDays(result.getString("repeat_days"));
+                if (todo.getRepeatDays() == null && result.getObject("repeat_day") != null) todo.setRepeatDays(result.getString("repeat_day"));
+                todo.setRepeatTime(result.getString("repeat_time"));
+                int monthlyDay = result.getInt("monthly_day");
+                todo.setMonthlyDay(result.wasNull() ? null : monthlyDay);
+                todo.setMonthlyTime(result.getString("monthly_time"));
                 todos.add(todo);
             }
         }
@@ -551,6 +784,11 @@ class Todo {
     private String nextAt;
     private String details;
     private String category;
+    private String repeatType;
+    private String repeatDays;
+    private String repeatTime;
+    private Integer monthlyDay;
+    private String monthlyTime;
 
     Todo(int id, String title) {
         this.id = id;
@@ -570,4 +808,14 @@ class Todo {
     void setDetails(String details) { this.details = details; }
     String getCategory() { return category; }
     void setCategory(String category) { this.category = category; }
+    String getRepeatType() { return repeatType; }
+    void setRepeatType(String repeatType) { this.repeatType = repeatType; }
+    String getRepeatDays() { return repeatDays; }
+    void setRepeatDays(String repeatDays) { this.repeatDays = repeatDays; }
+    String getRepeatTime() { return repeatTime; }
+    void setRepeatTime(String repeatTime) { this.repeatTime = repeatTime; }
+    Integer getMonthlyDay() { return monthlyDay; }
+    void setMonthlyDay(Integer monthlyDay) { this.monthlyDay = monthlyDay; }
+    String getMonthlyTime() { return monthlyTime; }
+    void setMonthlyTime(String monthlyTime) { this.monthlyTime = monthlyTime; }
 }
