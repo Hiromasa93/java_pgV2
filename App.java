@@ -120,6 +120,25 @@ public class App {
                 }
                 redirectHome(exchange);
                 return;
+            } else if ((path.equals("/bulk-done") || path.equals("/bulk-delete")) && method.equals("POST")) {
+                String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+                List<Integer> ids = parseIds(body);
+                if (!ids.isEmpty()) {
+                    String placeholders = String.join(",", java.util.Collections.nCopies(ids.size(), "?"));
+                    String sql = path.equals("/bulk-done")
+                            ? "UPDATE todos SET done = 1 WHERE id IN (" + placeholders + ")"
+                            : "DELETE FROM todos WHERE id IN (" + placeholders + ")";
+                    try (PreparedStatement statement = connection.prepareStatement(sql)) {
+                        for (int i = 0; i < ids.size(); i++) {
+                            statement.setInt(i + 1, ids.get(i));
+                        }
+                        statement.executeUpdate();
+                    } catch (SQLException e) {
+                        throw new IOException(e);
+                    }
+                }
+                redirectHome(exchange);
+                return;
             } else if (path.equals("/") || path.equals("/search")) {
                 Map<String, String> query = parseForm(exchange.getRequestURI().getRawQuery() == null
                         ? "" : exchange.getRequestURI().getRawQuery());
@@ -155,6 +174,9 @@ public class App {
                         + ".search-tools { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 12px; margin: 12px 0; } .search-form { margin: 0; }"
                         + ".category-tabs { display: flex; align-items: center; flex-wrap: wrap; } .category-tabs a[aria-current='page'] { background: #286a9f; color: #fff; }"
                         + ".todo-section { margin: 10px 0; } .todo-section > summary { cursor: pointer; font-weight: 600; color: #254b70; }"
+                        + ".bulk-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 14px 0 4px; } .bulk-tools button[hidden] { display: none; }"
+                        + ".select-task { display: none; margin-right: 8px; accent-color: #286a9f; transform: scale(1.15); } body.selecting .select-task { display: inline-block; }"
+                        + ".todo-card.selected { background: #dce9f5; border-color: #286a9f; box-shadow: 0 3px 12px #1f3b5730; } .todo-card.done.selected { background: #d8ece0; }"
                         + ".todo-meta { margin: 8px 0; padding: 8px 10px; border-radius: 7px; background: #f2f6fa; color: #52647a; }"
                         + ".details { margin: 8px 0; padding: 8px 12px; background: #fff8e8; border-left: 3px solid #e4b64d; border-radius: 4px; white-space: pre-wrap; overflow-wrap: anywhere; }"
                         + "button, a { display: inline-block; margin: 5px 8px 2px 0; padding: 7px 11px; border: 0; border-radius: 6px; background: #e7eef7; color: #254b70; text-decoration: none; cursor: pointer; font: inherit; } button { background: #286a9f; color: #fff; }"
@@ -184,6 +206,12 @@ public class App {
                         .append(filterLink("done", "完了のみ", filter, searchMode ? searchQuery : null, selectedCategory))
                         .append(filterLink("all", "全て", filter, searchMode ? searchQuery : null, selectedCategory))
                         .append("</nav>");
+                html.append("<form id='bulk-form' class='bulk-tools' method='post'>")
+                        .append("<button id='select-mode' type='button' aria-pressed='false'>複数選択</button>")
+                        .append("<button type='submit' formaction='/bulk-done' name='action' value='done' data-confirm='選択したタスクを完了します。よろしいですか？' hidden disabled>選択した項目を完了にする</button>")
+                        .append("<button type='submit' formaction='/bulk-delete' name='action' value='delete' data-confirm='選択したタスクを削除します。よろしいですか？' hidden disabled>選択した項目を削除する</button>")
+                        .append("<span id='selection-count' aria-live='polite'></span></form>");
+                html.append("<dialog id='bulk-confirm' aria-labelledby='bulk-confirm-message'><p id='bulk-confirm-message'></p><button id='bulk-confirm-yes' type='button'>はい</button><button id='bulk-confirm-no' type='button'>いいえ</button></dialog>");
                 if (todos.isEmpty()) {
                     html.append("<p>やることは、いまゼロです</p>");
                 } else {
@@ -204,7 +232,8 @@ public class App {
                         for (Todo todo : visibleTodos) {
                             html.append("<li class='todo-card")
                                     .append(todo.isDone() ? " done" : "")
-                                    .append("'><div class='todo-title'>").append(escapeHtml(todo.getTitle()));
+                                    .append("'><label class='select-label'><input class='select-task' type='checkbox' form='bulk-form' name='id' value='")
+                                    .append(todo.getId()).append("' aria-label='").append(escapeHtml(todo.getTitle())).append("を選択'></label><div class='todo-title'>").append(escapeHtml(todo.getTitle()));
                             if (todo.isDone()) {
                                 html.append(" <span aria-label='完了'>✔ 完了</span>");
                             }
@@ -246,7 +275,7 @@ public class App {
                         html.append("</ul>");
                     }
                 }
-                html.append("</body></html>");
+                html.append("<script>(function(){const form=document.getElementById('bulk-form');const toggle=document.getElementById('select-mode');const boxes=Array.from(document.querySelectorAll('.select-task'));const actions=Array.from(document.querySelectorAll('.bulk-tools button[type=submit]'));const count=document.getElementById('selection-count');const dialog=document.getElementById('bulk-confirm');let pendingButton=null;let confirmed=false;function refresh(){const selected=boxes.filter(box=>box.checked);const active=document.body.classList.contains('selecting');selected.forEach(box=>box.closest('.todo-card').classList.add('selected'));boxes.filter(box=>!box.checked).forEach(box=>box.closest('.todo-card').classList.remove('selected'));actions.forEach(button=>{button.disabled=selected.length===0;button.hidden=!active;});count.textContent=selected.length?' '+selected.length+'件選択中':'';}toggle.addEventListener('click',function(){const active=document.body.classList.toggle('selecting');toggle.setAttribute('aria-pressed',String(active));toggle.textContent=active?'選択を解除':'複数選択';if(!active){boxes.forEach(box=>box.checked=false);}refresh();});boxes.forEach(box=>box.addEventListener('change',refresh));form.addEventListener('submit',function(event){if(confirmed){confirmed=false;return;}event.preventDefault();pendingButton=event.submitter;if(pendingButton){document.getElementById('bulk-confirm-message').textContent=pendingButton.dataset.confirm;dialog.showModal();}});document.getElementById('bulk-confirm-yes').addEventListener('click',function(){if(pendingButton){const button=pendingButton;pendingButton=null;confirmed=true;dialog.close();form.requestSubmit(button);}});document.getElementById('bulk-confirm-no').addEventListener('click',function(){pendingButton=null;dialog.close();});refresh();})();</script></body></html>");
                 message = html.toString();
                 exchange.getResponseHeaders().set("Content-Type", "text/html; charset=UTF-8");
             } else {
@@ -304,6 +333,25 @@ public class App {
             values.put(key, value);
         }
         return values;
+    }
+
+    static List<Integer> parseIds(String body) {
+        List<Integer> ids = new ArrayList<>();
+        for (String pair : body.split("&")) {
+            String[] parts = pair.split("=", 2);
+            if (!URLDecoder.decode(parts[0], StandardCharsets.UTF_8).equals("id") || parts.length < 2) {
+                continue;
+            }
+            try {
+                int id = Integer.parseInt(URLDecoder.decode(parts[1], StandardCharsets.UTF_8));
+                if (id > 0 && !ids.contains(id)) {
+                    ids.add(id);
+                }
+            } catch (NumberFormatException e) {
+                // 数字でないidは無視します。
+            }
+        }
+        return ids;
     }
 
     static Integer parseProgress(String value) {
