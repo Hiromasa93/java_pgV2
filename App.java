@@ -10,6 +10,9 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.time.Duration;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -177,6 +180,7 @@ public class App {
                         + ".bulk-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 14px 0 4px; } .bulk-tools button[hidden] { display: none; }"
                         + ".select-task { display: none; margin-right: 8px; accent-color: #286a9f; transform: scale(1.15); } body.selecting .select-task { display: inline-block; }"
                         + ".todo-card.selected { background: #dce9f5; border-color: #286a9f; box-shadow: 0 3px 12px #1f3b5730; } .todo-card.done.selected { background: #d8ece0; }"
+                        + ".deadline-warning { color: #c62828; font-weight: 700; }"
                         + ".todo-meta { margin: 8px 0; padding: 8px 10px; border-radius: 7px; background: #f2f6fa; color: #52647a; }"
                         + ".details { margin: 8px 0; padding: 8px 12px; background: #fff8e8; border-left: 3px solid #e4b64d; border-radius: 4px; white-space: pre-wrap; overflow-wrap: anywhere; }"
                         + "button, a { display: inline-block; margin: 5px 8px 2px 0; padding: 7px 11px; border: 0; border-radius: 6px; background: #e7eef7; color: #254b70; text-decoration: none; cursor: pointer; font: inherit; } button { background: #286a9f; color: #fff; }"
@@ -237,11 +241,21 @@ public class App {
                             if (todo.isDone()) {
                                 html.append(" <span aria-label='完了'>✔ 完了</span>");
                             }
-                            html.append("</div>")
-                                    .append("<div class='todo-meta'>期限: ")
-                                    .append(todo.getNextAt() == null ? "期限なし" : escapeHtml(todo.getNextAt().replace('T', ' ')))
-                                    .append("</div>")
-                                    .append("<details class='todo-section'><summary>詳細/進捗</summary>");
+                            html.append("</div><div class='todo-meta'>期限: ");
+                            if (todo.getNextAt() == null || todo.getNextAt().isBlank()) {
+                                html.append("期限なし");
+                            } else {
+                                String deadlineWarning = todo.isDone() ? null : getDeadlineWarning(todo.getNextAt());
+                                html.append(deadlineWarning != null ? "<span class='deadline-warning'>" : "<span>")
+                                        .append(escapeHtml(todo.getNextAt().replace('T', ' ')))
+                                        .append("</span>");
+                                if (deadlineWarning != null) {
+                                    html.append(" <span class='deadline-warning'>")
+                                            .append(deadlineWarning)
+                                            .append("</span>");
+                                }
+                            }
+                            html.append("</div><details class='todo-section'><summary>詳細/進捗</summary>");
                             html.append("<div class='todo-meta'>カテゴリ: ")
                                     .append(todo.getCategory() == null ? "未設定" : escapeHtml(todo.getCategory()))
                                     .append("</div>");
@@ -362,6 +376,21 @@ public class App {
             int progress = Integer.parseInt(value);
             return progress >= 0 && progress <= 100 ? progress : null;
         } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    static String getDeadlineWarning(String nextAt) {
+        if (nextAt == null || nextAt.isBlank()) {
+            return null;
+        }
+        try {
+            Duration remaining = Duration.between(LocalDateTime.now(), LocalDateTime.parse(nextAt));
+            if (remaining.isNegative()) {
+                return "期限が過ぎています！";
+            }
+            return remaining.compareTo(Duration.ofHours(24)) < 0 ? "期限まで残り僅かです！" : null;
+        } catch (DateTimeParseException e) {
             return null;
         }
     }
