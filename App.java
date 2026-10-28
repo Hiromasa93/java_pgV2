@@ -64,15 +64,21 @@ public class App { // Appという名前のクラスです
                 exchange.close(); // ★追加 通信を閉じます
                 return; // ★追加 この分岐の処理を終えます
             } else if (path.equals("/")) { // トップページにフォームとTodo一覧を表示します
-                String html = "<form method='post' action='/add'><input name='todo'><button>追加</button></form><ul>"; // Todo追加フォームと一覧を作ります
-                for (Todo todo : todos) { // ★変更 Todoを1件ずつ取り出します
-                    String mark = ""; // ★変更 未完了のTodoには印を付けません
-                    if (todo.isDone()) { // ★変更 Todoが完了しているか調べます
-                        mark = " ✔"; // ★変更 完了したTodoに印を付けます
-                    } // ★変更 完了状態の確認を終わります
-                    html += "<li>" + todo.getTitle() + mark + " <a href='/done?id=" + todo.getId() + "'>完了</a> <a href='/delete?id=" + todo.getId() + "'>削除</a></li>"; // ★追加 タイトルと完了・削除リンクを一覧に加えます
-                } // Todoの項目を追加し終わります
-                html += "</ul>"; // HTMLのリストを閉じます
+                String html = "<html><head><meta charset='UTF-8'><style>body { max-width: 640px; margin: 24px auto; padding: 0 16px; font-size: 16px; }</style></head><body><h1>わたしのTodo</h1><form method='post' action='/add'><input name='todo'><button>追加</button></form>"; // ページの見出しと最小限の余白・幅・文字サイズを設定します
+                if (todos.isEmpty()) { // Todoが0件か確認します
+                    html += "<p>やることは、いまゼロです</p>"; // 0件のときにメッセージを表示します
+                } else {
+                    html += "<ul>"; // Todoの一覧を始めます
+                    for (Todo todo : todos) { // ★変更 Todoを1件ずつ取り出します
+                        String mark = ""; // ★変更 未完了のTodoには印を付けません
+                        if (todo.isDone()) { // ★変更 Todoが完了しているか調べます
+                            mark = " ✔"; // ★変更 完了したTodoに印を付けます
+                        } // ★変更 完了状態の確認を終わります
+                        html += "<li>" + todo.getTitle() + mark + " <a href='/done?id=" + todo.getId() + "'>完了</a> <a href='/delete?id=" + todo.getId() + "'>削除</a></li>"; // ★追加 タイトルと完了・削除リンクを一覧に加えます
+                    } // Todoの項目を追加し終わります
+                    html += "</ul>"; // HTMLのリストを閉じます
+                }
+                html += "</body></html>"; // HTMLページを閉じます
                 message = html; // 組み立てたHTMLを返す内容にします
                 exchange.getResponseHeaders().set("Content-Type", "text/html; charset=UTF-8"); // トップページをHTMLとして返します
             } else {
