@@ -115,6 +115,12 @@ public class App {
                 redirectHome(exchange);
                 return;
             } else if (path.equals("/")) {
+                Map<String, String> query = parseForm(exchange.getRequestURI().getRawQuery() == null
+                        ? "" : exchange.getRequestURI().getRawQuery());
+                String filter = query.getOrDefault("filter", "all");
+                if (!filter.equals("pending") && !filter.equals("done") && !filter.equals("all")) {
+                    filter = "all";
+                }
                 StringBuilder html = new StringBuilder("<html><head><meta charset='UTF-8'><style>"
                         + "* { box-sizing: border-box; } body { max-width: 760px; margin: 32px auto; padding: 0 18px; font: 16px/1.5 system-ui, sans-serif; color: #243044; background: #f6f8fb; }"
                         + "h1 { color: #1e3a5f; } form.add-form, .todo-card { padding: 16px; border: 1px solid #d8e0eb; border-radius: 12px; background: #fff; box-shadow: 0 2px 8px #1f3b5710; }"
@@ -123,6 +129,8 @@ public class App {
                         + "ul { list-style: none; padding: 0; } .todo-card { margin: 14px 0; border-left: 6px solid #4f8fc0; }"
                         + "li.todo-card:nth-child(4n+2) { border-left-color: #55a887; } li.todo-card:nth-child(4n+3) { border-left-color: #e4a243; } li.todo-card:nth-child(4n+4) { border-left-color: #9a78c8; }"
                         + ".todo-title { margin-bottom: 8px; font-size: 1.2rem; font-weight: 700; color: #20344d; overflow-wrap: anywhere; } .todo-card.done { background: #f0f8f3; }"
+                        + ".filters { margin: 18px 0 10px; } .filters a[aria-current='page'] { background: #286a9f; color: #fff; }"
+                        + ".todo-section { margin: 10px 0; } .todo-section > summary { cursor: pointer; font-weight: 600; color: #254b70; }"
                         + ".todo-meta { margin: 8px 0; padding: 8px 10px; border-radius: 7px; background: #f2f6fa; color: #52647a; }"
                         + ".details { margin: 8px 0; padding: 8px 12px; background: #fff8e8; border-left: 3px solid #e4b64d; border-radius: 4px; white-space: pre-wrap; overflow-wrap: anywhere; }"
                         + "button, a { display: inline-block; margin: 5px 8px 2px 0; padding: 7px 11px; border: 0; border-radius: 6px; background: #e7eef7; color: #254b70; text-decoration: none; cursor: pointer; font: inherit; } button { background: #286a9f; color: #fff; }"
@@ -133,20 +141,40 @@ public class App {
                         + "<label>進捗（%） <input name='progress' type='number' min='0' max='100' placeholder='未設定'></label> "
                         + "<label>次に行う日時 <input name='nextAt' type='datetime-local'></label> "
                         + "<button>追加</button></form>");
+                html.append("<nav class='filters' aria-label='Todoの表示切り替え'>")
+                        .append(filterLink("pending", "未完了のみ", filter))
+                        .append(filterLink("done", "完了のみ", filter))
+                        .append(filterLink("all", "全て", filter))
+                        .append("</nav>");
                 try {
                     List<Todo> todos = selectTodos();
                     if (todos.isEmpty()) {
                         html.append("<p>やることは、いまゼロです</p>");
                     } else {
-                        html.append("<ul>");
+                        List<Todo> visibleTodos = new ArrayList<>();
                         for (Todo todo : todos) {
+                            if ((filter.equals("pending") && todo.isDone())
+                                    || (filter.equals("done") && !todo.isDone())) {
+                                continue;
+                            }
+                            visibleTodos.add(todo);
+                        }
+                        if (visibleTodos.isEmpty()) {
+                            html.append("<p>該当するTodoはありません</p>");
+                        } else {
+                            html.append("<ul>");
+                            for (Todo todo : visibleTodos) {
                             html.append("<li class='todo-card")
                                     .append(todo.isDone() ? " done" : "")
                                     .append("'><div class='todo-title'>").append(escapeHtml(todo.getTitle()));
                             if (todo.isDone()) {
                                 html.append(" <span aria-label='完了'>✔ 完了</span>");
                             }
-                            html.append("</div>");
+                            html.append("</div>")
+                                    .append("<div class='todo-meta'>期限: ")
+                                    .append(todo.getNextAt() == null ? "期限なし" : escapeHtml(todo.getNextAt().replace('T', ' ')))
+                                    .append("</div>")
+                                    .append("<details class='todo-section'><summary>詳細/進捗</summary>");
                             if (todo.getDetails() != null) {
                                 html.append("<div class='details'><strong>詳細</strong><br>")
                                         .append(escapeHtml(todo.getDetails()))
@@ -154,9 +182,8 @@ public class App {
                             }
                             html.append("<div class='todo-meta'>進捗: ")
                                     .append(todo.getProgress() == null ? "なし" : todo.getProgress() + "%")
-                                    .append(" / 次回: ")
-                                    .append(todo.getNextAt() == null ? "期限なし" : escapeHtml(todo.getNextAt().replace('T', ' ')))
-                                    .append("</div>")
+                                    .append("</div></details>")
+                                    .append("<details class='todo-section'><summary>編集</summary>")
                                     .append("<form method='post' action='/update'>")
                                     .append("<input type='hidden' name='id' value='").append(todo.getId()).append("'>")
                                     .append("<label>Todo <input name='todo' required value='")
@@ -168,11 +195,12 @@ public class App {
                                     .append(todo.getProgress() == null ? "" : todo.getProgress()).append("'></label> ")
                                     .append("<label>次に行う日時 <input name='nextAt' type='datetime-local' value='")
                                     .append(todo.getNextAt() == null ? "" : escapeHtml(todo.getNextAt())).append("'></label> ")
-                                    .append("<button>変更を保存</button></form>")
+                                    .append("<button>変更を保存</button></form></details>")
                                     .append("<a href='/done?id=").append(todo.getId()).append("'>完了</a> ")
                                     .append("<a href='/delete?id=").append(todo.getId()).append("'>削除</a></li>");
+                            }
+                            html.append("</ul>");
                         }
-                        html.append("</ul>");
                     }
                 } catch (SQLException e) {
                     throw new IOException(e);
@@ -315,6 +343,12 @@ public class App {
     static String escapeHtml(String value) {
         return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
                 .replace("\"", "&quot;").replace("'", "&#39;");
+    }
+
+    static String filterLink(String value, String label, String selectedFilter) {
+        return "<a href='/?filter=" + value + "'"
+                + (value.equals(selectedFilter) ? " aria-current='page'" : "")
+                + ">" + label + "</a> ";
     }
 
     static List<Todo> selectTodos() throws SQLException {
