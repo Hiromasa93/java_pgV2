@@ -24,6 +24,7 @@ public class App {
         }
         addColumnIfMissing("progress", "INTEGER");
         addColumnIfMissing("next_at", "TEXT");
+        addColumnIfMissing("details", "TEXT");
 
         HttpServer server = HttpServer.create(new InetSocketAddress(8080), 0);
         server.createContext("/", exchange -> {
@@ -35,14 +36,16 @@ public class App {
             if (path.equals("/add") && method.equals("POST")) {
                 Map<String, String> form = parseForm(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
                 String title = form.getOrDefault("todo", "").trim();
+                String details = emptyToNull(form.get("details"));
                 Integer progress = parseProgress(form.get("progress"));
                 String nextAt = emptyToNull(form.get("nextAt"));
                 if (!title.isEmpty()) {
                     try (PreparedStatement statement = connection.prepareStatement(
-                            "INSERT INTO todos (title, done, progress, next_at) VALUES (?, 0, ?, ?)")) {
+                            "INSERT INTO todos (title, done, progress, next_at, details) VALUES (?, 0, ?, ?, ?)")) {
                         statement.setString(1, title);
                         setNullableInt(statement, 2, progress);
                         statement.setString(3, nextAt);
+                        statement.setString(4, details);
                         statement.executeUpdate();
                     } catch (SQLException e) {
                         throw new IOException(e);
@@ -110,9 +113,11 @@ public class App {
             } else if (path.equals("/")) {
                 StringBuilder html = new StringBuilder("<html><head><meta charset='UTF-8'><style>"
                         + "body { max-width: 720px; margin: 24px auto; padding: 0 16px; font-size: 16px; }"
-                        + "input { margin: 4px; } li { margin: 12px 0; }</style></head><body>"
+                        + "input, textarea { margin: 4px; } textarea { display: block; width: 100%; max-width: 480px; box-sizing: border-box; }"
+                        + "li { margin: 12px 0; } .details { margin: 8px 0; padding: 8px 12px; background: #f3f4f6; border-left: 3px solid #9ca3af; white-space: pre-wrap; overflow-wrap: anywhere; }</style></head><body>"
                         + "<h1>わたしのTodo</h1><form method='post' action='/add'>"
                         + "<label>Todo <input name='todo' required></label> "
+                        + "<label>詳細 <textarea name='details' rows='3' placeholder='タスクに必要なこと'></textarea></label> "
                         + "<label>進捗（%） <input name='progress' type='number' min='0' max='100' placeholder='未設定'></label> "
                         + "<label>次に行う日時 <input name='nextAt' type='datetime-local'></label> "
                         + "<button>追加</button></form>");
@@ -126,6 +131,11 @@ public class App {
                             html.append("<li>").append(escapeHtml(todo.getTitle()));
                             if (todo.isDone()) {
                                 html.append(" ✔");
+                            }
+                            if (todo.getDetails() != null) {
+                                html.append("<div class='details'><strong>詳細</strong><br>")
+                                        .append(escapeHtml(todo.getDetails()))
+                                        .append("</div>");
                             }
                             html.append("<div>進捗: ")
                                     .append(todo.getProgress() == null ? "なし" : todo.getProgress() + "%")
@@ -290,7 +300,7 @@ public class App {
     static List<Todo> selectTodos() throws SQLException {
         List<Todo> todos = new ArrayList<>();
         try (PreparedStatement statement = connection.prepareStatement(
-                "SELECT id, title, done, progress, next_at FROM todos "
+                "SELECT id, title, done, progress, next_at, details FROM todos "
                         + "ORDER BY done ASC, CASE WHEN next_at IS NULL OR next_at = '' THEN 1 ELSE 0 END ASC, next_at ASC, id ASC");
              ResultSet result = statement.executeQuery()) {
             while (result.next()) {
@@ -299,6 +309,7 @@ public class App {
                 int progress = result.getInt("progress");
                 todo.setProgress(result.wasNull() ? null : progress);
                 todo.setNextAt(result.getString("next_at"));
+                todo.setDetails(result.getString("details"));
                 todos.add(todo);
             }
         }
@@ -312,6 +323,7 @@ class Todo {
     private boolean done;
     private Integer progress;
     private String nextAt;
+    private String details;
 
     Todo(int id, String title) {
         this.id = id;
@@ -327,4 +339,6 @@ class Todo {
     void setProgress(Integer progress) { this.progress = progress; }
     String getNextAt() { return nextAt; }
     void setNextAt(String nextAt) { this.nextAt = nextAt; }
+    String getDetails() { return details; }
+    void setDetails(String details) { this.details = details; }
 }
