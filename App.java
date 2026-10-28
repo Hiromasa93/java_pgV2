@@ -116,10 +116,18 @@ public class App {
                 return;
             } else if (path.equals("/")) {
                 StringBuilder html = new StringBuilder("<html><head><meta charset='UTF-8'><style>"
-                        + "body { max-width: 720px; margin: 24px auto; padding: 0 16px; font-size: 16px; }"
-                        + "input, textarea { margin: 4px; } textarea { display: block; width: 100%; max-width: 480px; box-sizing: border-box; }"
-                        + "li { margin: 12px 0; } .details { margin: 8px 0; padding: 8px 12px; background: #f3f4f6; border-left: 3px solid #9ca3af; white-space: pre-wrap; overflow-wrap: anywhere; }</style></head><body>"
-                        + "<h1>わたしのTodo</h1><form method='post' action='/add'>"
+                        + "* { box-sizing: border-box; } body { max-width: 760px; margin: 32px auto; padding: 0 18px; font: 16px/1.5 system-ui, sans-serif; color: #243044; background: #f6f8fb; }"
+                        + "h1 { color: #1e3a5f; } form.add-form, .todo-card { padding: 16px; border: 1px solid #d8e0eb; border-radius: 12px; background: #fff; box-shadow: 0 2px 8px #1f3b5710; }"
+                        + "form.add-form { margin-bottom: 22px; } label { display: block; margin: 10px 0; font-weight: 600; color: #46566d; }"
+                        + "input, textarea { margin: 4px 0; padding: 8px; border: 1px solid #cbd5e1; border-radius: 6px; font: inherit; } textarea { display: block; width: 100%; max-width: 480px; }"
+                        + "ul { list-style: none; padding: 0; } .todo-card { margin: 14px 0; border-left: 6px solid #4f8fc0; }"
+                        + "li.todo-card:nth-child(4n+2) { border-left-color: #55a887; } li.todo-card:nth-child(4n+3) { border-left-color: #e4a243; } li.todo-card:nth-child(4n+4) { border-left-color: #9a78c8; }"
+                        + ".todo-title { margin-bottom: 8px; font-size: 1.2rem; font-weight: 700; color: #20344d; overflow-wrap: anywhere; } .todo-card.done { background: #f0f8f3; }"
+                        + ".todo-meta { margin: 8px 0; padding: 8px 10px; border-radius: 7px; background: #f2f6fa; color: #52647a; }"
+                        + ".details { margin: 8px 0; padding: 8px 12px; background: #fff8e8; border-left: 3px solid #e4b64d; border-radius: 4px; white-space: pre-wrap; overflow-wrap: anywhere; }"
+                        + "button, a { display: inline-block; margin: 5px 8px 2px 0; padding: 7px 11px; border: 0; border-radius: 6px; background: #e7eef7; color: #254b70; text-decoration: none; cursor: pointer; font: inherit; } button { background: #286a9f; color: #fff; }"
+                        + "@media (max-width: 520px) { body { margin-top: 18px; } input { max-width: 100%; } }</style></head><body>"
+                        + "<h1>わたしのTodo</h1><form class='add-form' method='post' action='/add'>"
                         + "<label>Todo <input name='todo' required></label> "
                         + "<label>詳細 <textarea name='details' rows='3' placeholder='タスクに必要なこと'></textarea></label> "
                         + "<label>進捗（%） <input name='progress' type='number' min='0' max='100' placeholder='未設定'></label> "
@@ -132,16 +140,19 @@ public class App {
                     } else {
                         html.append("<ul>");
                         for (Todo todo : todos) {
-                            html.append("<li>").append(escapeHtml(todo.getTitle()));
+                            html.append("<li class='todo-card")
+                                    .append(todo.isDone() ? " done" : "")
+                                    .append("'><div class='todo-title'>").append(escapeHtml(todo.getTitle()));
                             if (todo.isDone()) {
-                                html.append(" ✔");
+                                html.append(" <span aria-label='完了'>✔ 完了</span>");
                             }
+                            html.append("</div>");
                             if (todo.getDetails() != null) {
                                 html.append("<div class='details'><strong>詳細</strong><br>")
                                         .append(escapeHtml(todo.getDetails()))
                                         .append("</div>");
                             }
-                            html.append("<div>進捗: ")
+                            html.append("<div class='todo-meta'>進捗: ")
                                     .append(todo.getProgress() == null ? "なし" : todo.getProgress() + "%")
                                     .append(" / 次回: ")
                                     .append(todo.getNextAt() == null ? "期限なし" : escapeHtml(todo.getNextAt().replace('T', ' ')))
