@@ -1,6 +1,7 @@
 import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.net.URLEncoder;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
@@ -114,9 +115,11 @@ public class App {
                 }
                 redirectHome(exchange);
                 return;
-            } else if (path.equals("/")) {
+            } else if (path.equals("/") || path.equals("/search")) {
                 Map<String, String> query = parseForm(exchange.getRequestURI().getRawQuery() == null
                         ? "" : exchange.getRequestURI().getRawQuery());
+                boolean searchMode = path.equals("/search");
+                String searchQuery = query.getOrDefault("q", "").trim();
                 String filter = query.getOrDefault("filter", "all");
                 if (!filter.equals("pending") && !filter.equals("done") && !filter.equals("all")) {
                     filter = "all";
@@ -141,10 +144,16 @@ public class App {
                         + "<label>進捗（%） <input name='progress' type='number' min='0' max='100' placeholder='未設定'></label> "
                         + "<label>次に行う日時 <input name='nextAt' type='datetime-local'></label> "
                         + "<button>追加</button></form>");
+                html.append("<form class='search-form' method='get' action='/search'>")
+                        .append("<label>キーワード検索 <input name='q' value='")
+                        .append(escapeHtml(searchQuery))
+                        .append("' placeholder='例: 買う する（AND） / 買う OR する（OR）'></label>")
+                        .append("<input type='hidden' name='filter' value='").append(filter).append("'>")
+                        .append("<button>検索</button></form>");
                 html.append("<nav class='filters' aria-label='Todoの表示切り替え'>")
-                        .append(filterLink("pending", "未完了のみ", filter))
-                        .append(filterLink("done", "完了のみ", filter))
-                        .append(filterLink("all", "全て", filter))
+                        .append(filterLink("pending", "未完了のみ", filter, searchMode ? searchQuery : null))
+                        .append(filterLink("done", "完了のみ", filter, searchMode ? searchQuery : null))
+                        .append(filterLink("all", "全て", filter, searchMode ? searchQuery : null))
                         .append("</nav>");
                 try {
                     List<Todo> todos = selectTodos();
@@ -154,7 +163,8 @@ public class App {
                         List<Todo> visibleTodos = new ArrayList<>();
                         for (Todo todo : todos) {
                             if ((filter.equals("pending") && todo.isDone())
-                                    || (filter.equals("done") && !todo.isDone())) {
+                                    || (filter.equals("done") && !todo.isDone())
+                                    || (searchMode && !matchesSearch(todo, searchQuery))) {
                                 continue;
                             }
                             visibleTodos.add(todo);
@@ -345,10 +355,53 @@ public class App {
                 .replace("\"", "&quot;").replace("'", "&#39;");
     }
 
-    static String filterLink(String value, String label, String selectedFilter) {
-        return "<a href='/?filter=" + value + "'"
+    static String filterLink(String value, String label, String selectedFilter, String searchQuery) {
+        String path = searchQuery == null ? "/?filter=" + value
+                : "/search?q=" + URLEncoder.encode(searchQuery, StandardCharsets.UTF_8) + "&filter=" + value;
+        return "<a href='" + path + "'"
                 + (value.equals(selectedFilter) ? " aria-current='page'" : "")
                 + ">" + label + "</a> ";
+    }
+
+    static boolean matchesSearch(Todo todo, String query) {
+        if (query == null || query.isBlank()) {
+            return true;
+        }
+
+        String searchableText = (todo.getTitle() + " " + (todo.getDetails() == null ? "" : todo.getDetails()))
+                .toLowerCase(java.util.Locale.ROOT);
+        List<List<String>> orGroups = new ArrayList<>();
+        List<String> andTerms = new ArrayList<>();
+        for (String token : query.trim().split("\\s+")) {
+            if (token.equalsIgnoreCase("OR")) {
+                if (!andTerms.isEmpty()) {
+                    orGroups.add(andTerms);
+                    andTerms = new ArrayList<>();
+                }
+            } else if (!token.equalsIgnoreCase("AND")) {
+                andTerms.add(token.toLowerCase(java.util.Locale.ROOT));
+            }
+        }
+        if (!andTerms.isEmpty()) {
+            orGroups.add(andTerms);
+        }
+        if (orGroups.isEmpty()) {
+            return true;
+        }
+
+        for (List<String> group : orGroups) {
+            boolean allTermsMatch = true;
+            for (String term : group) {
+                if (!searchableText.contains(term)) {
+                    allTermsMatch = false;
+                    break;
+                }
+            }
+            if (allTermsMatch) {
+                return true;
+            }
+        }
+        return false;
     }
 
     static List<Todo> selectTodos() throws SQLException {
